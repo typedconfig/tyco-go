@@ -22,46 +22,75 @@ build and run against the local module source.
 
 ## Quick Start
 
-This package includes a ready-to-use example Tyco file at:
-
-	example.tyco
-
-([View on GitHub](https://github.com/typedconfig/tyco-go/blob/main/example.tyco))
-
-You can load and parse this file using the Go Tyco API. Example usage:
+Every binding ships the same canonical sample configuration under `tyco/example.tyco`
+([view on GitHub](https://github.com/typedconfig/tyco-go/blob/main/tyco/example.tyco)).
+Load it to explore globals, structs, and references exactly like in the Python README:
 
 ```go
 package main
 
 import (
 	"fmt"
+	"log"
 	tyco "github.com/typedconfig/tyco-go"
 )
 
 func main() {
-	ctx, err := tyco.Load("example.tyco")
+	ctx, err := tyco.Load("tyco/example.tyco")
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	globals := ctx.Globals
-	environment := globals["environment"]
-	debug := globals["debug"]
-	timeout := globals["timeout"]
-	fmt.Printf("env=%v debug=%v timeout=%v\n", environment, debug, timeout)
-	// ... access objects, etc ...
-}
-```
 
-See the [example.tyco](https://github.com/typedconfig/tyco-go/blob/main/example.tyco) file for the full configuration example.
-
-	// Materialise the document as plain Go maps/slices identical to the reference JSON.
 	data := ctx.ToJSON()
-	fmt.Printf("Project: %s\n", data["project"])
+	fmt.Printf("env=%v debug=%v timeout=%v\n", data["environment"], data["debug"], data["timeout"])
+
+	if databases, ok := data["Database"].([]any); ok && len(databases) > 0 {
+		if primary, ok := databases[0].(map[string]any); ok {
+			fmt.Printf("primary database -> %s:%v\n", primary["host"], primary["port"])
+		}
+	}
 }
 ```
 
-You can also parse from a string using `tyco.LoadString(content)`, which is convenient for tests
-or embedding.
+Use `tyco.LoadString(content)` in tests to parse from memory; it returns the same `*TycoContext`
+so you can call `ToJSON()` to inspect globals and struct instances.
+
+### Example Tyco File
+
+```
+tyco/example.tyco
+```
+
+```tyco
+# Global configuration with type annotations
+str environment: production
+bool debug: false
+int timeout: 30
+
+# Database configuration struct
+Database:
+ *str name:           # Primary key field (*)
+  str host:
+  int port:
+  str connection_string:
+  # Instances
+  - primary, localhost,    5432, "postgresql://localhost:5432/myapp"
+  - replica, replica-host, 5432, "postgresql://replica-host:5432/myapp"
+
+# Server configuration struct  
+Server:
+ *str name:           # Primary key for referencing
+  int port:
+  str host:
+  ?str description:   # Nullable field (?) - can be null
+  # Server instances
+  - web1,    8080, web1.example.com,    description: "Primary web server"
+  - api1,    3000, api1.example.com,    description: null
+  - worker1, 9000, worker1.example.com, description: "Worker number 1"
+
+# Feature flags array
+str[] features: [auth, analytics, caching]
+```
 
 ## Development
 
