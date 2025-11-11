@@ -20,24 +20,39 @@ go get github.com/typedconfig/tyco-go
 When working directly inside this repository no additional steps are necessary; `go test` will
 build and run against the local module source.
 
-## Usage
+## Quick Start
 
-Loading a `.tyco` file from disk:
+This package includes a ready-to-use example Tyco file at:
+
+	example.tyco
+
+([View on GitHub](https://github.com/typedconfig/tyco-go/blob/main/example.tyco))
+
+You can load and parse this file using the Go Tyco API. Example usage:
 
 ```go
 package main
 
 import (
 	"fmt"
-
 	tyco "github.com/typedconfig/tyco-go"
 )
 
 func main() {
-	ctx, err := tyco.Load("../tyco-test-suite/inputs/simple1.tyco")
+	ctx, err := tyco.Load("example.tyco")
 	if err != nil {
 		panic(err)
 	}
+	globals := ctx.Globals
+	environment := globals["environment"]
+	debug := globals["debug"]
+	timeout := globals["timeout"]
+	fmt.Printf("env=%v debug=%v timeout=%v\n", environment, debug, timeout)
+	// ... access objects, etc ...
+}
+```
+
+See the [example.tyco](https://github.com/typedconfig/tyco-go/blob/main/example.tyco) file for the full configuration example.
 
 	// Materialise the document as plain Go maps/slices identical to the reference JSON.
 	data := ctx.ToJSON()
