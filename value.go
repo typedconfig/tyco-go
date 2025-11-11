@@ -1,0 +1,384 @@
+package tyco
+
+import (
+	"strconv"
+	"strings"
+)
+
+// ValueType identifies the specific Tyco value variant.
+type ValueType int
+
+const (
+	ValueNull ValueType = iota
+	ValueBool
+	ValueInt
+	ValueFloat
+	ValueString
+	ValueDate
+	ValueTime
+	ValueDateTime
+	ValueArray
+	ValueInstance
+	ValueReference
+)
+
+// TycoString stores metadata about parsed strings (templates vs literals).
+type TycoString struct {
+	Value       string
+	HasTemplate bool
+	IsLiteral   bool
+}
+
+// TycoReference captures a primary-key reference to another struct.
+type TycoReference struct {
+	StructName string
+	PrimaryKey string
+	Resolved   *TycoInstance
+}
+
+// TycoInstance models a struct invocation with ordered attributes.
+type TycoInstance struct {
+	StructName string
+	fields     map[string]*Value
+	fieldOrder []string
+}
+
+// Value wraps all supported Tyco literal kinds.
+type Value struct {
+	Type      ValueType
+	Bool      bool
+	Int       int64
+	Float     float64
+	String    *TycoString
+	Array     []*Value
+	Instance  *TycoInstance
+	Reference *TycoReference
+}
+
+// NewInstance creates an empty instance for the provided struct name.
+func NewInstance(structName string) *TycoInstance {
+	return &TycoInstance{
+		StructName: structName,
+		fields:     make(map[string]*Value),
+		fieldOrder: make([]string, 0),
+	}
+}
+
+// Clone performs a deep copy of the instance.
+func (inst *TycoInstance) Clone() *TycoInstance {
+	if inst == nil {
+		return nil
+	}
+	clone := &TycoInstance{
+		StructName: inst.StructName,
+		fields:     make(map[string]*Value, len(inst.fields)),
+		fieldOrder: append([]string(nil), inst.fieldOrder...),
+	}
+	for key, val := range inst.fields {
+		clone.fields[key] = val.Clone()
+	}
+	return clone
+}
+
+// SetAttribute stores/updates a field while maintaining order.
+func (inst *TycoInstance) SetAttribute(name string, value *Value) {
+	if inst.fields == nil {
+		inst.fields = make(map[string]*Value)
+	}
+	if _, exists := inst.fields[name]; !exists {
+		inst.fieldOrder = append(inst.fieldOrder, name)
+	}
+	inst.fields[name] = value
+}
+
+// GetAttribute reads a field value if present.
+func (inst *TycoInstance) GetAttribute(name string) *Value {
+	return inst.fields[name]
+}
+
+// RemoveAttribute deletes the attribute and returns the previous value.
+func (inst *TycoInstance) RemoveAttribute(name string) *Value {
+	value, ok := inst.fields[name]
+	if !ok {
+		return nil
+	}
+	delete(inst.fields, name)
+	for idx, key := range inst.fieldOrder {
+		if key == name {
+			inst.fieldOrder = append(inst.fieldOrder[:idx], inst.fieldOrder[idx+1:]...)
+			break
+		}
+	}
+	return value
+}
+
+// FieldOrder returns a copy of the stored key order.
+func (inst *TycoInstance) FieldOrder() []string {
+	return append([]string(nil), inst.fieldOrder...)
+}
+
+// Attributes exposes the backing map for mutation.
+func (inst *TycoInstance) Attributes() map[string]*Value {
+	return inst.fields
+}
+
+// EnforceOrderFromSchema reorders fields to match schema definition first.
+func (inst *TycoInstance) EnforceOrderFromSchema(fields []*FieldSchema) {
+	ordered := make([]string, 0, len(inst.fieldOrder))
+	seen := make(map[string]struct{})
+	for _, field := range fields {
+		if _, ok := inst.fields[field.Name]; ok {
+			ordered = append(ordered, field.Name)
+			seen[field.Name] = struct{}{}
+		}
+	}
+	for _, key := range inst.fieldOrder {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		ordered = append(ordered, key)
+	}
+	inst.fieldOrder = ordered
+}
+
+// ToJSONObject converts the instance to a JSON-serialisable structure.
+func (inst *TycoInstance) ToJSONObject() map[string]any {
+	result := make(map[string]any, len(inst.fields))
+	for _, key := range inst.fieldOrder {
+		if value, ok := inst.fields[key]; ok {
+			result[key] = value.ToJSONValue()
+		}
+	}
+	return result
+}
+
+// Clone duplicates the value and all nested content.
+func (v *Value) Clone() *Value {
+	if v == nil {
+		return nil
+	}
+	clone := *v
+	switch v.Type {
+	case ValueString:
+		if v.String != nil {
+			sCopy := *v.String
+			clone.String = &sCopy
+		}
+	case ValueArray:
+		if v.Array != nil {
+			clone.Array = make([]*Value, len(v.Array))
+			for idx, item := range v.Array {
+				clone.Array[idx] = item.Clone()
+			}
+		}
+	case ValueInstance:
+		clone.Instance = v.Instance.Clone()
+	case ValueReference:
+		if v.Reference != nil {
+			refCopy := *v.Reference
+			if v.Reference.Resolved != nil {
+				refCopy.Resolved = v.Reference.Resolved.Clone()
+			}
+			clone.Reference = &refCopy
+		}
+	}
+	return &clone
+}
+
+// ToTemplateText renders the textual representation used during templates.
+func (v *Value) ToTemplateText() string {
+	switch v.Type {
+	case ValueNull:
+		return "null"
+	case ValueBool:
+		if v.Bool {
+			return "true"
+		}
+		return "false"
+	case ValueInt:
+		return formatInt(v.Int)
+	case ValueFloat:
+		return formatFloat(v.Float)
+	case ValueString:
+		if v.String != nil {
+			return v.String.Value
+		}
+	case ValueDate, ValueTime, ValueDateTime:
+		if v.String != nil {
+			return v.String.Value
+		}
+	case ValueReference:
+		if v.Reference != nil {
+			return v.Reference.PrimaryKey
+		}
+	}
+	return ""
+}
+
+// RenderTemplates resolves template placeholders recursively.
+func (v *Value) RenderTemplates(ctx *TycoContext, current *TycoInstance) {
+	switch v.Type {
+	case ValueString:
+		if v.String != nil {
+			v.String.Render(ctx, current)
+		}
+	case ValueArray:
+		for _, item := range v.Array {
+			item.RenderTemplates(ctx, current)
+		}
+	case ValueInstance:
+		if v.Instance == nil {
+			return
+		}
+		keys := v.Instance.FieldOrder()
+		snapshot := v.Instance.Clone()
+		for _, key := range keys {
+			if field := v.Instance.fields[key]; field != nil {
+				field.RenderTemplates(ctx, snapshot)
+			}
+			snapshot = v.Instance.Clone()
+		}
+	}
+}
+
+// ToJSONValue materialises a Go representation ready for encoding/json.
+func (v *Value) ToJSONValue() any {
+	switch v.Type {
+	case ValueNull:
+		return nil
+	case ValueBool:
+		return v.Bool
+	case ValueInt:
+		return v.Int
+	case ValueFloat:
+		return v.Float
+	case ValueString, ValueDate, ValueTime, ValueDateTime:
+		if v.String != nil {
+			return v.String.Value
+		}
+		return ""
+	case ValueArray:
+		result := make([]any, 0, len(v.Array))
+		for _, value := range v.Array {
+			result = append(result, value.ToJSONValue())
+		}
+		return result
+	case ValueInstance:
+		if v.Instance == nil {
+			return nil
+		}
+		return v.Instance.ToJSONObject()
+	case ValueReference:
+		if v.Reference != nil && v.Reference.Resolved != nil {
+			return v.Reference.Resolved.ToJSONObject()
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// Render performs template substitution for Tyco strings.
+func (s *TycoString) Render(ctx *TycoContext, current *TycoInstance) {
+	if s == nil || !s.HasTemplate || s.IsLiteral {
+		return
+	}
+	var builder strings.Builder
+	runes := []rune(s.Value)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if ch != '{' {
+			builder.WriteRune(ch)
+			continue
+		}
+		j := i + 1
+		var placeholder strings.Builder
+		for j < len(runes) && runes[j] != '}' {
+			placeholder.WriteRune(runes[j])
+			j++
+		}
+		if j < len(runes) && runes[j] == '}' {
+			if resolved, ok := resolvePlaceholder(placeholder.String(), ctx, current); ok {
+				builder.WriteString(resolved)
+			} else {
+				builder.WriteRune('{')
+				builder.WriteString(placeholder.String())
+				builder.WriteRune('}')
+			}
+			i = j
+		} else {
+			builder.WriteRune(ch)
+		}
+	}
+	result := builder.String()
+	if decoded, err := unescapeBasicString(result); err == nil {
+		s.Value = decoded
+	} else {
+		s.Value = result
+	}
+	s.HasTemplate = false
+}
+
+func resolvePlaceholder(path string, ctx *TycoContext, current *TycoInstance) (string, bool) {
+	segments := strings.Split(path, ".")
+	if len(segments) == 0 {
+		return "", false
+	}
+	fromGlobal := strings.HasPrefix(path, "global.") && len(segments) > 1
+	startIdx := 0
+	if fromGlobal {
+		startIdx = 1
+	}
+	var value *Value
+	first := segments[startIdx]
+	if fromGlobal {
+		value = ctx.GetGlobal(first)
+	} else if current != nil {
+		value = current.GetAttribute(first)
+		if value == nil {
+			value = ctx.GetGlobal(first)
+		}
+	} else {
+		value = ctx.GetGlobal(first)
+	}
+	if value == nil {
+		return "", false
+	}
+	for _, segment := range segments[startIdx+1:] {
+		switch value.Type {
+		case ValueInstance:
+			if value.Instance == nil {
+				return "", false
+			}
+			value = value.Instance.GetAttribute(segment)
+		case ValueReference:
+			if value.Reference == nil || value.Reference.Resolved == nil {
+				return "", false
+			}
+			value = value.Reference.Resolved.GetAttribute(segment)
+		default:
+			return "", false
+		}
+		if value == nil {
+			return "", false
+		}
+	}
+	return value.ToTemplateText(), true
+}
+
+// formatInt avoids pulling fmt for frequently-called template conversions.
+func formatInt(value int64) string {
+	return strconvFormatInt(value, 10)
+}
+
+func formatFloat(value float64) string {
+	return strconvFormatFloat(value, 'f', -1, 64)
+}
+
+// Dedicated helpers so we can stub during testing if needed.
+var (
+	strconvFormatInt   = func(i int64, base int) string { return strconv.FormatInt(i, base) }
+	strconvFormatFloat = func(f float64, fmt byte, prec, bitSize int) string {
+		return strconv.FormatFloat(f, fmt, prec, bitSize)
+	}
+)
