@@ -41,7 +41,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	data := ctx.ToJSON()
+	data := ctx.ToObject()
 	fmt.Printf("env=%v debug=%v timeout=%v\n", data["environment"], data["debug"], data["timeout"])
 
 	if databases, ok := data["Database"].([]any); ok && len(databases) > 0 {
@@ -53,7 +53,7 @@ func main() {
 ```
 
 Use `tyco.LoadString(content)` in tests to parse from memory; it returns the same `*TycoContext`
-so you can call `ToJSON()` to inspect globals and struct instances.
+so you can call `ToObject()` to inspect globals and struct instances.
 
 ### Example Tyco File
 

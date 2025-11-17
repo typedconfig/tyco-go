@@ -479,6 +479,11 @@ func (ctx *TycoContext) ToJSON() map[string]any {
 	return result
 }
 
+// ToObject exposes the same aggregated representation as the Python binding.
+func (ctx *TycoContext) ToObject() map[string]any {
+	return ctx.ToJSON()
+}
+
 func (ctx *TycoContext) cloneStructMap() map[string]*TycoStruct {
 	snapshot := make(map[string]*TycoStruct, len(ctx.structs))
 	for name, structDef := range ctx.structs {
