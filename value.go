@@ -320,50 +320,87 @@ func (s *TycoString) Render(ctx *TycoContext, current *TycoInstance) {
 }
 
 func resolvePlaceholder(path string, ctx *TycoContext, current *TycoInstance) (string, bool) {
+	if strings.TrimSpace(path) == "" {
+		return "", false
+	}
 	segments := strings.Split(path, ".")
-	if len(segments) == 0 {
+	queue := append([]string{}, segments...)
+	if len(queue) == 0 {
 		return "", false
 	}
-	fromGlobal := strings.HasPrefix(path, "global.") && len(segments) > 1
-	startIdx := 0
-	if fromGlobal {
-		startIdx = 1
-	}
-	var value *Value
-	first := segments[startIdx]
-	if fromGlobal {
-		value = ctx.GetGlobal(first)
+	originalFirst := queue[0]
+
+	var obj any
+	if strings.HasPrefix(path, "global.") {
+		obj = ctx.Globals()
+		queue = queue[1:]
 	} else if current != nil {
-		value = current.GetAttribute(first)
-		if value == nil {
-			value = ctx.GetGlobal(first)
-		}
+		obj = current
 	} else {
-		value = ctx.GetGlobal(first)
+		obj = ctx.Globals()
 	}
-	if value == nil {
+
+	fetch := func(target any, attr string) (any, bool) {
+		switch t := target.(type) {
+		case map[string]*Value:
+			val, ok := t[attr]
+			if ok && val != nil {
+				return val, true
+			}
+		case *TycoInstance:
+			if val := t.GetAttribute(attr); val != nil {
+				return val, true
+			}
+		case *TycoReference:
+			if t != nil && t.Resolved != nil {
+				if val := t.Resolved.GetAttribute(attr); val != nil {
+					return val, true
+				}
+			}
+		case *Value:
+			switch t.Type {
+			case ValueInstance:
+				if t.Instance != nil {
+					if val := t.Instance.GetAttribute(attr); val != nil {
+						return val, true
+					}
+				}
+			case ValueReference:
+				if t.Reference != nil && t.Reference.Resolved != nil {
+					if val := t.Reference.Resolved.GetAttribute(attr); val != nil {
+						return val, true
+					}
+				}
+			}
+		}
+		return nil, false
+	}
+
+	for len(queue) > 0 {
+		attr := queue[0]
+		if next, ok := fetch(obj, attr); ok {
+			obj = next
+			queue = queue[1:]
+			continue
+		}
+		if len(queue) > 1 {
+			merged := queue[0] + "." + queue[1]
+			queue = append([]string{merged}, queue[2:]...)
+			continue
+		}
+		if attr == "global" && originalFirst == "global" {
+			obj = ctx.Globals()
+			queue = queue[1:]
+			continue
+		}
 		return "", false
 	}
-	for _, segment := range segments[startIdx+1:] {
-		switch value.Type {
-		case ValueInstance:
-			if value.Instance == nil {
-				return "", false
-			}
-			value = value.Instance.GetAttribute(segment)
-		case ValueReference:
-			if value.Reference == nil || value.Reference.Resolved == nil {
-				return "", false
-			}
-			value = value.Reference.Resolved.GetAttribute(segment)
-		default:
-			return "", false
-		}
-		if value == nil {
-			return "", false
-		}
+
+	val, ok := obj.(*Value)
+	if !ok || val == nil {
+		return "", false
 	}
-	return value.ToTemplateText(), true
+	return val.ToTemplateText(), true
 }
 
 // formatInt avoids pulling fmt for frequently-called template conversions.

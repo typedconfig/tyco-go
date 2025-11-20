@@ -16,10 +16,12 @@ const (
 	stateInStructInstances
 )
 
+const attrNamePattern = `[a-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*`
+
 var (
 	structDefRe      = regexp.MustCompile(`^([A-Z][A-Za-z0-9_]*)\s*:$`)
-	fieldRe          = regexp.MustCompile(`^\s*([*?])?([A-Za-z][A-Za-z0-9_]*)(\[\])?\s+([a-z_][A-Za-z0-9_]*)\s*:(?:\s+(.*))?$`)
-	defaultUpdateRe  = regexp.MustCompile(`^\s+([a-z_][A-Za-z0-9_]*)\s*:(?:\s+(.*))?$`)
+	fieldRe          = regexp.MustCompile(`^\s*([*?])?([A-Za-z][A-Za-z0-9_]*)(\[\])?\s+(` + attrNamePattern + `)\s*:(?:\s+(.*))?$`)
+	defaultUpdateRe  = regexp.MustCompile(`^\s+(` + attrNamePattern + `)\s*:(?:\s+(.*))?$`)
 	structCallRe     = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)\((.*)\)$`)
 	whitespacePrefix = regexp.MustCompile(`^\s`)
 )
