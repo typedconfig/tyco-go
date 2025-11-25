@@ -44,7 +44,7 @@ func TestCanonicalSuite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s failed: %v", name, err)
 		}
-		actual := canonicaliseJSON(ctx.ToJSON())
+		actual := canonicaliseJSON(ctx.AsJSON())
 		expectedBytes, err := os.ReadFile(expectedPath)
 		if err != nil {
 			t.Fatalf("read expected %s failed: %v", name, err)

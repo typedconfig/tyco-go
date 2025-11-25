@@ -1,7 +1,9 @@
 package tyco
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -508,8 +510,8 @@ func (ctx *TycoContext) renderTemplates() {
 	}
 }
 
-// ToJSON materialises the Go representation used by tests/consumers.
-func (ctx *TycoContext) ToJSON() map[string]any {
+// AsJSON materialises the Go representation used by tests/consumers.
+func (ctx *TycoContext) AsJSON() map[string]any {
 	result := make(map[string]any, len(ctx.globals)+len(ctx.structs))
 	for key, value := range ctx.globals {
 		result[key] = value.ToJSONValue()
@@ -527,9 +529,28 @@ func (ctx *TycoContext) ToJSON() map[string]any {
 	return result
 }
 
-// ToObject exposes the same aggregated representation as the Python binding.
-func (ctx *TycoContext) ToObject() map[string]any {
-	return ctx.ToJSON()
+// AsObject exposes the same aggregated representation as the Python binding.
+func (ctx *TycoContext) AsObject() map[string]any {
+	return ctx.AsJSON()
+}
+
+// DumpsJSON returns the context serialized as JSON. Provide a non-empty indent
+// string (e.g. "  ") to pretty-print.
+func (ctx *TycoContext) DumpsJSON(indent string) ([]byte, error) {
+	if indent == "" {
+		return json.Marshal(ctx.AsJSON())
+	}
+	return json.MarshalIndent(ctx.AsJSON(), "", indent)
+}
+
+// DumpJSON writes the serialized JSON to the provided writer.
+func (ctx *TycoContext) DumpJSON(w io.Writer, indent string) error {
+	data, err := ctx.DumpsJSON(indent)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err
 }
 
 func (ctx *TycoContext) cloneStructMap() map[string]*TycoStruct {

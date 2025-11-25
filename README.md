@@ -41,7 +41,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	data := ctx.ToObject()
+	data := ctx.AsObject()
 	fmt.Printf("timezone=%v\n", data["timezone"])
 
 	if apps, ok := data["Application"].([]any); ok && len(apps) > 0 {
@@ -59,7 +59,8 @@ func main() {
 ```
 
 Use `tyco.LoadString(content)` in tests to parse from memory; it returns the same `*TycoContext`
-so you can call `ToObject()` to inspect globals and struct instances.
+so you can call `AsObject()` to inspect globals and struct instances or `AsJSON()` for a plain
+map ready for `encoding/json`.
 
 ### Example Tyco File
 
