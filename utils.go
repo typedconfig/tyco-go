@@ -56,6 +56,41 @@ func hasUnclosedDelimiter(line, delimiter string) bool {
 	return strings.Index(line[start+len(delimiter):], delimiter) == -1
 }
 
+func hasUnclosedParentheses(text string) bool {
+	depth := 0
+	inQuotes := false
+	var quote rune
+	escape := false
+	for _, ch := range text {
+		if escape {
+			escape = false
+			continue
+		}
+		if inQuotes {
+			if ch == '\\' {
+				escape = true
+				continue
+			}
+			if ch == quote {
+				inQuotes = false
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuotes = true
+			quote = ch
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth > 0
+}
+
 func splitTopLevel(input string, delimiter rune) []string {
 	var parts []string
 	var current strings.Builder

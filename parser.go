@@ -189,6 +189,20 @@ func (p *TycoParser) parseLines(lines []SourceLine) (*TycoContext, error) {
 				return nil, newParseError("Struct field defined before struct header").WithSpan(lineSpan)
 			}
 
+			trimmedDefault := strings.TrimSpace(valueStr)
+			if strings.HasPrefix(trimmedDefault, "(") && hasUnclosedParentheses(trimmedDefault) {
+				var err error
+				idx, valueStr, err = p.accumulateEnumList(idx, lines, valueStr)
+				if err != nil {
+					if tyErr, ok := err.(*TycoError); ok {
+						return nil, tyErr.WithSpan(lineSpan)
+					}
+					return nil, err
+				}
+				valueStr = stripInlineComment(valueStr)
+				trimmedDefault = strings.TrimSpace(valueStr)
+			}
+
 			if !isGlobalLine {
 				field := &FieldSchema{
 					Name:         attrName,
@@ -197,13 +211,24 @@ func (p *TycoParser) parseLines(lines []SourceLine) (*TycoContext, error) {
 					IsNullable:   isNullable,
 					IsArray:      isArray,
 				}
-				if strings.TrimSpace(valueStr) != "" {
-					descriptor := fieldTypeDescriptor(typeName, isArray)
-					parsed, err := p.parseValue(valueStr, descriptor, ctx, lineSpan)
-					if err != nil {
-						return nil, err
+				if trimmedDefault != "" {
+					if strings.HasPrefix(trimmedDefault, "(") {
+						if isArray {
+							return nil, newParseError("Enum constraints are only supported on scalar fields").WithSpan(lineSpan)
+						}
+						choices, err := p.parseEnumChoices(trimmedDefault, typeName, ctx, lineSpan)
+						if err != nil {
+							return nil, err
+						}
+						field.EnumChoices = choices
+					} else {
+						descriptor := fieldTypeDescriptor(typeName, isArray)
+						parsed, err := p.parseValue(trimmedDefault, descriptor, ctx, lineSpan)
+						if err != nil {
+							return nil, err
+						}
+						field.DefaultValue = parsed
 					}
-					field.DefaultValue = parsed
 				}
 				ctx.GetStruct(currentStruct).AddField(field)
 				state = stateInStructSchema
@@ -238,13 +263,26 @@ func (p *TycoParser) parseLines(lines []SourceLine) (*TycoContext, error) {
 				}
 			}
 			valueStr = stripInlineComment(valueStr)
-
-			var parsed *Value
-			if strings.TrimSpace(valueStr) != "" {
-				structDef := ctx.GetStruct(currentStruct)
-				if structDef == nil {
-					return nil, newUnknownStructError(currentStruct).WithSpan(lineSpan)
+			trimmedDefault := strings.TrimSpace(valueStr)
+			if strings.HasPrefix(trimmedDefault, "(") && hasUnclosedParentheses(trimmedDefault) {
+				var err error
+				idx, valueStr, err = p.accumulateEnumList(idx, lines, valueStr)
+				if err != nil {
+					if tyErr, ok := err.(*TycoError); ok {
+						return nil, tyErr.WithSpan(lineSpan)
+					}
+					return nil, err
 				}
+				valueStr = stripInlineComment(valueStr)
+				trimmedDefault = strings.TrimSpace(valueStr)
+			}
+
+			structDef := ctx.GetStruct(currentStruct)
+			if structDef == nil {
+				return nil, newUnknownStructError(currentStruct).WithSpan(lineSpan)
+			}
+
+			if trimmedDefault != "" {
 				var fieldSchema *FieldSchema
 				for _, field := range structDef.Fields() {
 					if field.Name == fieldName {
@@ -255,15 +293,31 @@ func (p *TycoParser) parseLines(lines []SourceLine) (*TycoContext, error) {
 				if fieldSchema == nil {
 					return nil, newParseErrorf("Unknown field %q", fieldName).WithSpan(lineSpan)
 				}
-				descriptor := fieldTypeDescriptor(fieldSchema.TypeName, fieldSchema.IsArray)
-				value, err := p.parseValue(valueStr, descriptor, ctx, lineSpan)
-				if err != nil {
-					return nil, err
+				if strings.HasPrefix(trimmedDefault, "(") {
+					if fieldSchema.IsArray {
+						return nil, newParseError("Enum constraints are only supported on scalar fields").WithSpan(lineSpan)
+					}
+					choices, err := p.parseEnumChoices(trimmedDefault, fieldSchema.TypeName, ctx, lineSpan)
+					if err != nil {
+						return nil, err
+					}
+					if err := structDef.SetEnumChoices(fieldName, choices); err != nil {
+						return nil, newParseError(err.Error()).WithSpan(lineSpan)
+					}
+				} else {
+					descriptor := fieldTypeDescriptor(fieldSchema.TypeName, fieldSchema.IsArray)
+					value, err := p.parseValue(trimmedDefault, descriptor, ctx, lineSpan)
+					if err != nil {
+						return nil, err
+					}
+					if err := structDef.SetDefault(fieldName, value); err != nil {
+						return nil, newParseError(err.Error()).WithSpan(lineSpan)
+					}
 				}
-				parsed = value
-			}
-			if err := ctx.GetStruct(currentStruct).SetDefault(fieldName, parsed); err != nil {
-				return nil, newParseError(err.Error()).WithSpan(lineSpan)
+			} else {
+				if err := structDef.SetDefault(fieldName, nil); err != nil {
+					return nil, newParseError(err.Error()).WithSpan(lineSpan)
+				}
 			}
 			continue
 		}
@@ -325,6 +379,19 @@ func (p *TycoParser) accumulateMultiline(idx int, lines []SourceLine, initial, d
 	}
 	if hasUnclosedDelimiter(value, delimiter) {
 		return cursor, value, newParseErrorf("Unterminated %s string literal", delimiter)
+	}
+	return cursor, value, nil
+}
+
+func (p *TycoParser) accumulateEnumList(idx int, lines []SourceLine, initial string) (int, string, error) {
+	value := initial
+	cursor := idx
+	for cursor+1 < len(lines) && hasUnclosedParentheses(stripInlineComment(value)) {
+		cursor++
+		value += "\n" + lines[cursor].Text
+	}
+	if hasUnclosedParentheses(stripInlineComment(value)) {
+		return cursor, value, newParseError("Unterminated enum declaration")
 	}
 	return cursor, value, nil
 }
@@ -470,6 +537,27 @@ func (p *TycoParser) parseValue(token, typeName string, ctx *TycoContext, span S
 		}
 		return p.parseStructCall(trimmed, typeName, ctx, span)
 	}
+}
+
+func (p *TycoParser) parseEnumChoices(token, typeName string, ctx *TycoContext, span SourceSpan) ([]*Value, error) {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" || trimmed[0] != '(' || trimmed[len(trimmed)-1] != ')' {
+		return nil, newParseError("Enum choices must be enclosed in parentheses").WithSpan(span)
+	}
+	inner := trimmed[1 : len(trimmed)-1]
+	parts := splitTopLevel(inner, ',')
+	if len(parts) == 0 {
+		return nil, newParseError("Enum declaration must contain at least one choice").WithSpan(span)
+	}
+	choices := make([]*Value, 0, len(parts))
+	for _, part := range parts {
+		value, err := p.parseValue(part, typeName, ctx, span)
+		if err != nil {
+			return nil, err
+		}
+		choices = append(choices, value)
+	}
+	return choices, nil
 }
 
 func (p *TycoParser) parseStructCall(token, typeName string, ctx *TycoContext, span SourceSpan) (*Value, error) {

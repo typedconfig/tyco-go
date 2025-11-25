@@ -185,6 +185,33 @@ func (v *Value) Clone() *Value {
 	return &clone
 }
 
+// Equal compares two values for semantic equality.
+func (v *Value) Equal(other *Value) bool {
+	if v == nil || other == nil {
+		return v == other
+	}
+	if v.Type != other.Type {
+		return false
+	}
+	switch v.Type {
+	case ValueNull:
+		return true
+	case ValueBool:
+		return v.Bool == other.Bool
+	case ValueInt:
+		return v.Int == other.Int
+	case ValueFloat:
+		return v.Float == other.Float
+	case ValueString, ValueDate, ValueTime, ValueDateTime:
+		if v.String == nil || other.String == nil {
+			return v.String == other.String
+		}
+		return v.String.Value == other.String.Value
+	default:
+		return v.ToTemplateText() == other.ToTemplateText()
+	}
+}
+
 // ToTemplateText renders the textual representation used during templates.
 func (v *Value) ToTemplateText() string {
 	switch v.Type {

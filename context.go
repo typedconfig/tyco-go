@@ -15,6 +15,7 @@ type FieldSchema struct {
 	IsNullable   bool
 	IsArray      bool
 	DefaultValue *Value
+	EnumChoices  []*Value
 }
 
 // Clone duplicates the schema entry.
@@ -25,6 +26,12 @@ func (f *FieldSchema) Clone() *FieldSchema {
 	clone := *f
 	if f.DefaultValue != nil {
 		clone.DefaultValue = f.DefaultValue.Clone()
+	}
+	if len(f.EnumChoices) > 0 {
+		clone.EnumChoices = make([]*Value, len(f.EnumChoices))
+		for idx, choice := range f.EnumChoices {
+			clone.EnumChoices[idx] = choice.Clone()
+		}
 	}
 	return &clone
 }
@@ -115,14 +122,50 @@ func (s *TycoStruct) SetDefault(fieldName string, value *Value) error {
 	for _, field := range s.fields {
 		if field.Name == fieldName {
 			if value == nil {
+				if len(field.EnumChoices) > 0 {
+					return fmt.Errorf("field %q previously set as enum; cannot clear with empty default", fieldName)
+				}
 				field.DefaultValue = nil
 			} else {
 				field.DefaultValue = value.Clone()
+				field.EnumChoices = nil
 			}
 			return nil
 		}
 	}
 	return fmt.Errorf("unknown field %q", fieldName)
+}
+
+// SetEnumChoices configures allowed values for a scalar field.
+func (s *TycoStruct) SetEnumChoices(fieldName string, choices []*Value) error {
+	for _, field := range s.fields {
+		if field.Name == fieldName {
+			field.EnumChoices = make([]*Value, len(choices))
+			for idx, choice := range choices {
+				field.EnumChoices[idx] = choice.Clone()
+			}
+			field.DefaultValue = nil
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown field %q", fieldName)
+}
+
+func valueMatchesEnum(value *Value, choices []*Value) bool {
+	for _, choice := range choices {
+		if value.Equal(choice) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatEnumChoices(choices []*Value) string {
+	parts := make([]string, len(choices))
+	for idx, choice := range choices {
+		parts[idx] = choice.ToTemplateText()
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
 }
 
 // BuildPrimaryIndex refreshes the lookup table used by references.
@@ -350,7 +393,12 @@ func applySchema(
 			if err != nil {
 				return err
 			}
+			if len(field.EnumChoices) > 0 && !valueMatchesEnum(coerced, field.EnumChoices) {
+				return newParseErrorf("Field %q enum value %q not in choices %s", field.Name, coerced.ToTemplateText(), formatEnumChoices(field.EnumChoices))
+			}
 			instance.SetAttribute(field.Name, coerced)
+		} else if len(field.EnumChoices) > 0 {
+			return newParseErrorf("Field %q enum value not set for struct %s", field.Name, schema.Name())
 		} else if field.DefaultValue != nil {
 			instance.SetAttribute(field.Name, field.DefaultValue.Clone())
 		}
